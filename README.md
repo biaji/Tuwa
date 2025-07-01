@@ -73,7 +73,7 @@ curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/downlo
 }
 ```
 则下载链接为：
-
+```
 http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
-
+```
 书籍格式为txt，仅仅扩展名改为了".hd"。下载不需要token验证（亦即说不定可以下载别人上传的书）
