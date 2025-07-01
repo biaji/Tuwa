@@ -54,7 +54,7 @@ curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/downlo
             {
                 "pushId": 263334,
                 "bookId": 23402,
-                "url": "/book/custom_v1/16312/ebook_54644.hd",
+                "url": "/book/custom_v1/<userid>/ebook_<timestamp>.hd
                 "size": 584854,
                 "planId": 0,
                 "study": null,
@@ -74,5 +74,6 @@ curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/downlo
 ```
 则下载链接为：
 
-http://p.s3.tuwa.starot.com/book/custom_v1/16312/ebook_54644.hd
+http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
+
 书籍格式为txt，仅仅扩展名改为了".hd"。下载不需要token验证（亦即说不定可以下载别人上传的书）
