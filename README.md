@@ -54,7 +54,7 @@ curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/downlo
             {
                 "pushId": 263334,
                 "bookId": 23402,
-                "url": "/book/custom_v1/<userid>/ebook_<timestamp>.hd
+                "url": "/book/custom_v1/<userid>/ebook_<timestamp>.hd"
                 "size": 584854,
                 "planId": 0,
                 "study": null,
