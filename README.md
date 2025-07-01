@@ -80,7 +80,9 @@ http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
 
 ## 单词本的生成
 
-### 加密
+单词本最终由com.funky.STBookGenerator调用```STBookGeneratorLib.so```生成。最后如果实现不行，就自己写一个apk来进行生成。
+
+### 流程
 
  1. 触发点: 保存操作由 STAICardCustomBookSaveWordAct.N() 方法发起。这个方法很可能是在用户点击“保存”按钮时被调用的。
  2. 核心组件: 保存的核心逻辑依赖于 com.funky.STBookGenerator 这个类。特别是它的一个 native 方法：generateHashRecord(JJIILjava/lang/String;)I。
@@ -102,6 +104,8 @@ http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
    3. 将该单词对象序列化成一个 JSON 格式的字符串。
    4. 返回这个 JSON 字符串给 native 代码。
    5. native 代码将收到的一个一个的 JSON 字符串，连同元数据（通过 getMeta 回调获取，同样是 JSON 格式），一起写入到一个自定义的、可能带有哈希索引的二进制文件（.hd 文件）中。
+
+### 单词读取
 
 STBookGenerator.Listener 的具体实现，也就是 com/starot/tuwa/ui/aicard/activity/h0 这个类。
 getWord(I) 方法负责将 N 列表（STAICardCustomBookSaveWordAct中的N字段）中的单个单词对象 STAICardCustomBookWordModel 转换成一个JSON字符串。
@@ -132,7 +136,6 @@ getWord(I) 方法负责将 N 列表（STAICardCustomBookSaveWordAct中的N字段
 ```
 
   字段说明:
-
 
    * word: (String) 单词本身。
    * symbols: (Array) 一个包含音标信息的数组。
