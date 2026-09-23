@@ -1,7 +1,11 @@
 # 途蛙记忆卡逆向
 
-## 目标
-防止厂家倒闭/跑路导致设备失联，逆向词书（`.hd`）生成与同步链路，实现本地替代服务器 + 独立生成器。
+## 设备说明
+
+本设备并非Android设备。 最新系统固件为： http://p.s3.tuwa.starot.com/firmware/study_v2_channel/01.02.02.61/xr_system_gen2.img
+定制设备固件基本没改造可能。可以理解为换了墨水屏幕的MP4。
+
+防止厂家倒闭、跑路、消失，故进行逆向。省的白花钱。
 
 ---
 
@@ -37,6 +41,80 @@
 - 词库缓存：`databases/WordRepo.sqlite`（Room；STWordRepo + mean/symbol/sentence 关系表）。
 - 账号/token：`databases/tuwa.db` 的 `stusermodel` 表。
 
+### 本地词库 SQLite（WordRepo.sqlite，真机 dump）
+
+词库缓存 `databases/WordRepo.sqlite`（Room），4 张业务表 + 2 张 Room 元数据表。
+
+**STWordRepo**（词主表；`word` 唯一；`type`：1=单词 35429、2=词条 4853，语义未细分）
+```sql
+CREATE TABLE "STWordRepo" (
+  "id" INTEGER NOT NULL PRIMARY KEY,
+  "type" INTEGER NOT NULL,
+  "word" VARCHAR(255) NOT NULL,
+  "prefix" TEXT NOT NULL,
+  "showStatus" INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX "stword_word" ON "STWordRepo" ("word");
+```
+
+**STWordMeanRelation**（释义；`wordId`→STWordRepo.id，`property`=词性[n./vt./vi.]，即生成 .hd 时 `getProperty()` 前缀来源）
+```sql
+CREATE TABLE "STWordMeanRelation" (
+  "id" INTEGER NOT NULL PRIMARY KEY,
+  "wordId" INTEGER NOT NULL,
+  "property" TEXT NOT NULL,
+  "mean" TEXT NOT NULL,
+  "soundUrl" TEXT NOT NULL,
+  "showStatus" INTEGER NOT NULL,
+  FOREIGN KEY ("wordId") REFERENCES "STWordRepo" ("id")
+);
+CREATE INDEX "stmean_wordId" ON "STWordMeanRelation" ("wordId");
+```
+
+**STWordSymbolRelation**（音标/发音；`type`=发音类型[样本恒 0]，`symbol`=音标，`soundUrl`=mp3）
+```sql
+CREATE TABLE "STWordSymbolRelation" (
+  "id" INTEGER NOT NULL PRIMARY KEY,
+  "wordId" INTEGER NOT NULL,
+  "type" INTEGER NOT NULL,
+  "symbol" TEXT NOT NULL,
+  "soundUrl" TEXT NOT NULL,
+  "showStatus" INTEGER NOT NULL,
+  FOREIGN KEY ("wordId") REFERENCES "STWordRepo" ("id")
+);
+CREATE INDEX "stsymbol_wordId" ON "STWordSymbolRelation" ("wordId");
+```
+
+**STWordMeanSentenceRelation**（例句；`enContent`/`chContent`=英/中，`enSoundUrl`/`chSoundUrl`=例句 mp3；`meanId`→STWordMeanRelation.id，样本恒 0）
+```sql
+CREATE TABLE "STWordMeanSentenceRelation" (
+  "id" INTEGER NOT NULL PRIMARY KEY,
+  "wordId" INTEGER NOT NULL,
+  "meanId" INTEGER NOT NULL,
+  "enContent" TEXT NOT NULL,
+  "chContent" TEXT NOT NULL,
+  "enSoundUrl" TEXT NOT NULL,
+  "chSoundUrl" TEXT NOT NULL,
+  "showStatus" INTEGER NOT NULL,
+  FOREIGN KEY ("wordId") REFERENCES "STWordRepo" ("id"),
+  FOREIGN KEY ("meanId") REFERENCES "STWordMeanRelation" ("id")
+);
+CREATE INDEX "stsentence_wordId" ON "STWordMeanSentenceRelation" ("wordId");
+CREATE INDEX "stsentence_meanId" ON "STWordMeanSentenceRelation" ("meanId");
+```
+
+**Room 元数据表**（非业务）：`android_metadata`（locale）、`room_master_table`（identity_hash）。
+- 说明：`showStatus` 全表恒 1（可见）；soundUrl 为相对路径（`/sound/word_symbol_v1/...`、`/sound/word_sentence_v1/...`），对应 S3/CDN 对象。
+- 生成 .hd 的字段对应关系：word←`STWordRepo.word`；symbol/symbol_url←`STWordSymbolRelation`；mean[i]←`STWordMeanRelation`（`property+' '+mean`）；sentence[i].en/zh/url←`STWordMeanSentenceRelation`（enContent/chContent/enSoundUrl）。
+
+## 2.5 鉴权格式（APP 侧）
+
+- 厂商按 **`'Bearer '<token>`（带字面单引号）** 前缀解析。标准 `Bearer `（无引号）→ 401；`'Bearer '` → 200。
+- token 为 **JWT(HS512)**（真机 `tuwa.db/stusermodel` 与抓包双样本确认）：
+  `{"alg":"HS512"}` + `{"created":<毫秒>,"id":<userId>,"sn":null,"rid":null,"type":"android","exp":<秒>}`
+- 来源：读设备 `databases/tuwa.db` 的 `stusermodel` 表。
+- ⚠️ 设备端 `/wms/token` 返回的 token 至今**未获真实样本**，是否同为 JWT(HS512) 尚未确认。
+
 ## 3. type=1 二进制词书 `.hd` 格式（生成端）
 
 结论源于真实二进制样本逆向，并经独立生成器**逐字节复现**验证（除 hash4 外全部一致）。
@@ -68,7 +146,7 @@
 24    reserved (u32)  = 0
 28    wordCount (u32)
 32    payloadLen (u32)= 总大小 − 40
-36    hash4 (u32)     = 自定义完整性校验（算法未识别，见 §9）
+36    hash4 (u32)     = 自定义完整性校验（算法未识别，见 §8）
 ```
 
 ### 3.4 描述符（元数据与词通用，每条 12 字节）
@@ -116,19 +194,75 @@ tag8/9/10 type1  sentenceCount（en/zh/url 三数组各计数，恒相等）
 
 ## 4. 协议
 
-### 设备注册（prod.study）
+### 设备注册
+
+```shell
+curl --location --request POST 'http://prod.study.tuwa.starot.com/wms/token?sn=xxxxx&code=CD919f&secret=xxxxxxx'
 ```
-POST /wms/token?sn=<设备序列号>&code=<未知>&secret=<未知>
-→ {"code":200,"data":{"token":"...","expired":<秒>,"base":"http://p.s3.tuwa.starot.com"}}
+ - sn 设备序列号
+ - code 未知
+ - secret 未知
+
+返回：
+
+```json
+{
+    "code": 200,
+    "message": "请求成功",
+    "data": {
+        "token": "此处可以获取token",
+        "expired": 1753947348,
+        "base": "http://p.s3.tuwa.starot.com"
+    }
+}
 ```
 
-### 资源推送（prod.study）
+### 资源推送
+
+```shell
+curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/download?cId=6&offset=0&size=3' \
+--header 'Authorization: '\''Bearer '\''有效token' \
 ```
-GET /wms/wait/download?cId=<1单词本|6电子书>&offset=&size=
-Header: Authorization: 'Bearer '<token>
-→ {"code":200,"data":{"total":N,"list":[{pushId,bookId,url,size,planId,study,review,updateTime,pressId,press,time,type,name,count,studyMode}]}}
+ - cId 待下载类别 1 单词本 6 电子书
+ - offset
+ - size
+
+当存在待下载项目时，返回结果示例：
+
+```json
+{
+    "code": 200,
+    "message": "请求成功",
+    "data": {
+        "total": 1,
+        "list": [
+            {
+                "pushId": 263334,
+                "bookId": 23402,
+                "url": "/book/custom_v1/<userid>/ebook_<timestamp>.hd"
+                "size": 584854,
+                "planId": 0,
+                "study": null,
+                "review": null,
+                "updateTime": 1751354646,
+                "pressId": null,
+                "press": null,
+                "time": 1751354654,
+                "type": 2,
+                "name": "威尔历险记",
+                "count": 200726,
+                "studyMode": 0
+            }
+        ]
+    }
+}
 ```
-- **type=2 电子书 `.hd` = 纯文本改扩展名**；**type=1 自定义词书 `.hd` = 二进制**（见 §3）。
+则下载链接为：
+```
+http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
+```
+书籍格式为txt，仅仅扩展名改为了".hd"。下载不需要token验证（亦即说不定可以下载别人上传的书）
+
 
 ## 5. MQTT 主题
 APP↔设备实时通信/推书走 `tuwa.study.machine.*` 主题，如 `...custom.book.push.device`、`...custom.book.word.info`、`...book.plan.info`、`...wifi.password`、`...wifi.ssid`。
@@ -138,55 +272,42 @@ APP↔设备实时通信/推书走 `tuwa.study.machine.*` 主题，如 `...custo
 
 # 三、通用
 
-## 6. 鉴权格式
-- 厂商按 **`'Bearer '<token>`（带字面单引号）** 前缀解析。标准 `Bearer `（无引号）→ 401；`'Bearer '` → 200。
-- token 为 **JWT(HS512)**：
-  `{"alg":"HS512"}` + `{"created":<毫秒>,"id":<userId>,"sn":null,"rid":null,"type":"android|device","exp":<秒>}`
-- token 获取（APP 侧）：读设备 `tuwa.db` 的 `stusermodel` 表。
-
-## 7. 真机 .hd 获取路径
+## 6. 真机 .hd 获取路径
 
 前置：设备已 root 并安装登录目标 App；设备自带网络工具（curl）且可直连（不经中转代理）。
 
-### 7.1 取 token
+### 6.1 取 token
 读设备数据库 `databases/tuwa.db` 的 `stusermodel` 表（HS512 JWT）：
 ```
 adb shell sqlite3 /data/data/<包名>/databases/tuwa.db 'SELECT token FROM stusermodel'
 ```
 
-### 7.2 词书列表（prod.app）
+### 6.2 词书列表（prod.app）
 ```
 GET /wms/custom/book/list
 Header: Authorization: 'Bearer '<token>
 → data:[{id, name, downloadUrl, fileSize, ...}]
 ```
 
-### 7.3 资源列表（prod.study，电子书等）
+### 6.3 资源列表（prod.study，电子书等）
 ```
 GET /wms/wait/download?cId=<1单词本|6电子书>&offset=0&size=N
 Header: Authorization: 'Bearer '<token>
 → data:{total, list:[{bookId, url, size, ...}]}
 ```
 
-### 7.4 下载 .hd（S3/CDN 公有读，无需 token）
+### 6.4 下载 .hd（S3/CDN 公有读，无需 token）
 ```
 curl -o out.hd 'http://p.s3.tuwa.starot.com<downloadUrl | url>'
 ```
 - 自定义词书（type=1）：`/book/custom_v1/<userId>/<bookId>_<ts>.hd`（二进制）
 - 电子书（type=2）：`/book/custom_v1/<userId>/ebook_<ts>.hd`（纯文本）
 
-### 7.5 本地生成（触发「保存」）
+### 6.5 本地生成（触发「保存」）
 在 App 内创建/保存自定义词书后，`.hd` 写入
 `getExternalFilesDir(null)/<bookId>.hd` = `/storage/emulated/0/Android/data/<包名>/files/<bookId>.hd`，经 `adb pull` 取回。
 
-## 8. 本地替代服务器
-- **DNS**：把 4 个 tuwa 域名（prod.app / prod.study / p.s3 / p.s3.public）A 记录指向本机局域网 IP，其余转发上游。
-- **HTTP**：S3 风格静态文件服务（按原 bucket 路径结构）+ 已按 `Api.java` 全量实现约 60 个 API 端点（/wms/*、/ums/*、/cms/*、/oms/*、/pms/*），返回 `{code,message,data}` 信封 + Bearer 校验（兼容 `'Bearer '` 与 `Bearer ` 前缀）。
-- 已实测：DNS 劫持、token 签发、Bearer 鉴权（200/401）、静态 .hd、404、按 Host 路由。
-- 限制：响应体仍为占位（未对拍真实结构）；MQTT 模拟未做。
-- 运行：`sudo python3 tuwa_server.py --dns-port 53 --http-port 80 --any`
-
-## 9. 未决项
+## 7. 未决项
 1. **hash4 @36**：常见 CRC-32 变体均不匹配，判定为库内置自定义校验和（区域/多项式未知）。不影响内容解码；若要生成设备完全接受的 `.hd`，需反汇编 `libSTBookGeneratorLib.so` 确认。
 2. **24 字节结构块**（offset 608）语义未完全确认。
 3. **设备端读取端**：`.hd` 读取端在设备主系统分区/设备应用（疑 Unity-il2cpp），固件 `xr_system_gen2.img`（2MB，全志 AWIH 引导镜像）不含读取端，未获取。
