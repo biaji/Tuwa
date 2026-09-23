@@ -5,6 +5,9 @@
 本设备并非Android设备。 最新系统固件为： http://p.s3.tuwa.starot.com/firmware/study_v2_channel/01.02.02.61/xr_system_gen2.img
 定制设备固件基本没改造可能。可以理解为换了墨水屏幕的MP4。
 
+有社区同好制作了自定义固件。膜拜的同时欢迎大家关注项目：
+https://github.com/hrp518/InkFrog
+
 防止厂家倒闭、跑路、消失，故进行逆向。省的白花钱。
 
 ---
