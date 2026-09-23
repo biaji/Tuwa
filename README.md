@@ -45,7 +45,7 @@
 
 词库缓存 `databases/WordRepo.sqlite`（Room），4 张业务表 + 2 张 Room 元数据表。
 
-**STWordRepo**（词主表；`word` 唯一；`type`：1=单词 35429、2=词条 4853，语义未细分）
+**STWordRepo**（词主表；`word` 唯一；`type`：1=单词、2=词条，语义未细分）
 ```sql
 CREATE TABLE "STWordRepo" (
   "id" INTEGER NOT NULL PRIMARY KEY,
@@ -113,7 +113,6 @@ CREATE INDEX "stsentence_meanId" ON "STWordMeanSentenceRelation" ("meanId");
 - token 为 **JWT(HS512)**（真机 `tuwa.db/stusermodel` 与抓包双样本确认）：
   `{"alg":"HS512"}` + `{"created":<毫秒>,"id":<userId>,"sn":null,"rid":null,"type":"android","exp":<秒>}`
 - 来源：读设备 `databases/tuwa.db` 的 `stusermodel` 表。
-- ⚠️ 设备端 `/wms/token` 返回的 token 至今**未获真实样本**，是否同为 JWT(HS512) 尚未确认。
 
 ## 3. type=1 二进制词书 `.hd` 格式（生成端）
 
@@ -186,6 +185,17 @@ tag8/9/10 type1  sentenceCount（en/zh/url 三数组各计数，恒相等）
 ### 3.8 校验
 - **hash8** = `MD5(文件[40:])` 的后 8 字节。
 - **hash4**：自定义完整性校验和，常见 CRC-32 变体均不匹配，算法未识别。
+
+### 3.9 示例生成脚本
+`work/tools/make_hd_demo.py`：自包含（仅标准库、不依赖样本/数据库）示例生成器，代码内内置几个单词（含多释义、多例句），按上述布局生成 `.hd` 并回读自检（bookId/词数/结构块/hash8）。
+
+```shell
+python3 work/tools/make_hd_demo.py demo.hd     # 默认输出 demo.hd
+# 生成 1612B / 3 词，hash8_ok=True；用 hd_parser.py 交叉解析字段与 tag 均正确
+```
+- 数据模型与 `word_fields()`：`word / symbol / symbol_url / means[] / sentences[]` 直接映射 §2.5 的 WordRepo.sqlite 表；`means` 值 = 词性 + 空格 + 释义。
+- 说明：`hash4`（自定义校验和）示例置 0。内容解码/回读不受影响；若要真机完全接受，需反汇编 `libSTBookGeneratorLib.so` 补全（见 §8 未决项）。
+
 
 
 ---
