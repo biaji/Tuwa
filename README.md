@@ -1,156 +1,194 @@
 # 途蛙记忆卡逆向
 
-## 设备说明
+## 目标
+防止厂家倒闭/跑路导致设备失联，逆向词书（`.hd`）生成与同步链路，实现本地替代服务器 + 独立生成器。
 
-本设备并非Android设备。 最新系统固件为： http://p.s3.tuwa.starot.com/firmware/study_v2_channel/01.02.02.61/xr_system_gen2.img
-定制设备固件基本没改造可能。可以理解为换了墨水屏幕的MP4。
+---
 
-防止厂家倒闭、跑路、消失，故进行逆向。省的白花钱。
+# 一、APP 端（词书生成与上传）
 
-## 交互协议
+## 1. 词书数据模型（getMeta / getWord）
 
-### 设备注册
+保存时 native 回调 Java 层 `getMeta()` / `getWord(i)`，各返回一段 JSON：
 
-```shell
-curl --location --request POST 'http://prod.study.tuwa.starot.com/wms/token?sn=xxxxx&code=CD919f&secret=xxxxxxx'
-```
- - sn 设备序列号
- - code 未知
- - secret 未知
-
-返回：
-
+**getMeta()**
 ```json
-{
-    "code": 200,
-    "message": "请求成功",
-    "data": {
-        "token": "此处可以获取token",
-        "expired": 1753947348,
-        "base": "http://p.s3.tuwa.starot.com"
-    }
-}
+{"id":<bookId>,"grade":0,"category":1,"name":"词书名","module":"英语","press":"","type":1,"tag":"单词"}
 ```
-
-### 资源推送
-
-```shell
-curl --location --request GET 'http://prod.study.tuwa.starot.com/wms/wait/download?cId=6&offset=0&size=3' \
---header 'Authorization: '\''Bearer '\''有效token' \
-```
- - cId 待下载类别 1 单词本 6 电子书
- - offset
- - size
-
-当存在待下载项目时，返回结果示例：
-
+**getWord(i)**（`means` 值 = `getProperty()+' '+getMean()`，空字段不写入）
 ```json
-{
-    "code": 200,
-    "message": "请求成功",
-    "data": {
-        "total": 1,
-        "list": [
-            {
-                "pushId": 263334,
-                "bookId": 23402,
-                "url": "/book/custom_v1/<userid>/ebook_<timestamp>.hd"
-                "size": 584854,
-                "planId": 0,
-                "study": null,
-                "review": null,
-                "updateTime": 1751354646,
-                "pressId": null,
-                "press": null,
-                "time": 1751354654,
-                "type": 2,
-                "name": "威尔历险记",
-                "count": 200726,
-                "studyMode": 0
-            }
-        ]
-    }
-}
-```
-则下载链接为：
-```
-http://p.s3.tuwa.starot.com/book/custom_v1/<userid>/ebook_<timestamp>.hd
-```
-书籍格式为txt，仅仅扩展名改为了".hd"。下载不需要token验证（亦即说不定可以下载别人上传的书）
-
-## 单词本的生成
-
-单词本最终由com.funky.STBookGenerator调用```STBookGeneratorLib.so```生成。最后如果实现不行，就自己写一个apk来进行生成。
-
-### 流程
-
- 1. 触发点: 保存操作由 STAICardCustomBookSaveWordAct.N() 方法发起。这个方法很可能是在用户点击“保存”按钮时被调用的。
- 2. 核心组件: 保存的核心逻辑依赖于 com.funky.STBookGenerator 这个类。特别是它的一个 native 方法：generateHashRecord(JJIILjava/lang/String;)I。
- 3. 数据流: generateHashRecord 方法本身并不直接接收单词列表。相反，它通过一个回调机制（Listener）来按需获取数据。
-       * 在调用 generateHashRecord 之前，代码通过 new-instance v4, Lcom/starot/tuwa/ui/aicard/activity/h0; 创建了一个监听器。
-       * 然后通过 invoke-virtual {v1, v4}, Lcom/funky/STBookGenerator;->setListener(Lcom/funky/STBookGenerator$Listener;)V 将监听器设置给了 STBookGenerator 实例。
-       * 这个监听器 h0 实现了 com/funky/STBookGenerator$Listener 接口，该接口包含两个关键的回调方法：getWord(I)Ljava/lang/String; 和 getMeta()Ljava/lang/String;。
- 4. `generateHashRecord` 的工作方式:
-       * 它接收了单词列表 N 的大小作为参数 (iget-object v1, p0, ...->N; ... invoke-virtual {v1}, Ljava/util/ArrayList;->size()I)。
-       * native C++ 代码会根据传入的 size，循环调用 Java 层的 getWord(int index) 回调方法，一次获取一个单词的数据。
-       * 它还会调用 getMeta() 方法来获取这本书的元数据（比如书名、ID等）。
-       * native 代码拿到这些字符串后，会将它们处理并写入到最终的文件中（路径由最后一个参数指定，即 K 字段）。方法名 generateHashRecord
-         暗示了最终的文件格式可能是一个包含哈希索引的自定义二进制格式，以便于快速查找，而不仅仅是纯文本。
-
-  单词列表 N 中的每个单词对象，在保存时会经过以下处理：
-
-   1. STAICardCustomBookSaveWordAct 中的监听器（即 h0 实例）的回调方法 getWord(int index) 被 native 代码调用。
-   2. 该方法会从列表 N 中取出对应索引的单词对象。
-   3. 将该单词对象序列化成一个 JSON 格式的字符串。
-   4. 返回这个 JSON 字符串给 native 代码。
-   5. native 代码将收到的一个一个的 JSON 字符串，连同元数据（通过 getMeta 回调获取，同样是 JSON 格式），一起写入到一个自定义的、可能带有哈希索引的二进制文件（.hd 文件）中。
-
-### 单词读取
-
-STBookGenerator.Listener 的具体实现，也就是 com/starot/tuwa/ui/aicard/activity/h0 这个类。
-getWord(I) 方法负责将 N 列表（STAICardCustomBookSaveWordAct中的N字段）中的单个单词对象 STAICardCustomBookWordModel 转换成一个JSON字符串。
-
-  这个JSON字符串的格式如下：
-```json
-{
-   "word": "单词本身",
-   "symbols": [
-     {
-       "symbol": "音标字符串",
-       "url": "音标发音文件URL"
-     }
-   ],
-   "means": [
-     {
-       "mean": "词性. 释义"
-     }
-   ],
-   "sentences": [
-     {
-       "en": "例句的英文内容",
-       "zh": "例句的中文内容",
-       "en_url": "例句的英文发音URL"
-     }
-   ]
- }
+{"word":"...","symbols":[{"symbol":"音标","url":"音标mp3"}],
+ "means":[{"mean":"词性. 释义"}],
+ "sentences":[{"en":"英文例句","zh":"中文翻译","en_url":"例句mp3"}]}
 ```
 
-  字段说明:
+## 2. 上传与云端存储（S3）
 
-   * word: (String) 单词本身。
-   * symbols: (Array) 一个包含音标信息的数组。
-       * symbol: (String) 音标，例如 /wɜːd/。
-       * url: (String) 音标发音的音频文件地址。
-   * means: (Array) 一个包含单词释义的数组。
-       * mean: (String) 单词的释义，格式通常是“词性. 中文意思”，例如 "n. 单词；话语"。
-   * sentences: (Array) 一个包含例句的数组。
-       * en: (String) 英文例句。
-       * zh: (String) 例句的中文翻译。
-       * en_url: (String) 英文例句发音的音频文件地址。
+- 保存后经 AWS S3 SDK 上传，**公有读**（PublicRead，无需 token 即可下载任何人上传的书）。
+- Bucket：`p.s3.public.tuwa.starot.com`（region `cn-north-1`）。
+- 对象 key（路径）：`book/custom_v1/<userId>/<bookId>_<时间戳>.hd`
+- 下载两种等价形式：
+  - `https://p.s3.public.tuwa.starot.com/book/custom_v1/<uid>/<bid>_<ts>.hd`
+  - `http://p.s3.tuwa.starot.com/book/custom_v1/<uid>/<bid>_<ts>.hd`（CDN，即推送返回的 base）
+- bucket 对对象 PublicRead 但**禁止 ListBucket 枚举**（只能凭已知 key 探测）。
 
-  要点:
+### 本地存储
+- 本地 `.hd`：`getExternalFilesDir(null)` = `/storage/emulated/0/Android/data/<包名>/files/<bookId>.hd`（点「保存」时才写）。
+- 词库缓存：`databases/WordRepo.sqlite`（Room；STWordRepo + mean/symbol/sentence 关系表）。
+- 账号/token：`databases/tuwa.db` 的 `stusermodel` 表。
 
-   * 代码逻辑显示，如果某个字段（如symbol）或某个数组（如sentences）没有内容，那么对应的键值对将不会出现在最终的JSON字符串中。
-   * getMeta() 方法也生成一个JSON字符串，用于描述整个词书的元数据，但它与单个单词的格式是分开的。
+## 3. type=1 二进制词书 `.hd` 格式（生成端）
 
+结论源于真实二进制样本逆向，并经独立生成器**逐字节复现**验证（除 hash4 外全部一致）。
+
+### 3.1 两种 .hd
+- **type=2 电子书 `.hd`**：纯文本（UTF-8），仅扩展名改为 `.hd`。
+- **type=1 自定义词书 `.hd`**：下述二进制格式。
+
+### 3.2 总体布局（小端）
+```
+偏移      大小   内容
+0         40     全局头
+40        96     元数据描述符表（8 条 × 12 字节）
+136       472    词索引表（N 条 × u32，N=词数，指向各词描述符表）
+608       24     结构块（值 0x00010000, 0, 词数-1, 0, 0, 0；语义未完全确认）
+632       ~      词描述符表（每词：[u32 字段数] + 字段数×12 字节描述符）
+~         ~      数据流（元数据字段 + 各词字段，顺序打包；紧随词描述符表之后）
+```
+> 词索引表大小 = 词数×4，故其后各段偏移随词数变化；数据流偏移为文件内绝对偏移。
+
+### 3.3 全局头（40 字节）
+```
+偏移  字段
+0     bookId (u32)
+4     reserved (u32) = 0
+8     hash8 (8B)      = MD5(载荷=文件[40:]) 的后 8 字节
+16    u32             = 8（版本/常量）
+20    flag (u32)      = 0x01000001（= generateHashRecord 首参 16777217）
+24    reserved (u32)  = 0
+28    wordCount (u32)
+32    payloadLen (u32)= 总大小 − 40
+36    hash4 (u32)     = 自定义完整性校验（算法未识别，见 §9）
+```
+
+### 3.4 描述符（元数据与词通用，每条 12 字节）
+```
+[u16 type][u16 tag][u32 length][u32 data_offset]
+type: 0=bookId(id)，1=int(u32 4字节)，2=string(UTF-8，length=字节数+1含\0，数据4字节对齐补零)
+```
+
+### 3.5 元数据描述符（tag 0-7，对应 getMeta）
+```
+tag0 type0 → id    tag1 type1 → grade    tag2 type1 → category
+tag3 type2 → name  tag4 type2 → module   tag5 type2 → press
+tag6 type1 → type  tag7 type2 → tag
+```
+
+### 3.6 词字段标签（对应 getWord，全词通用）
+```
+tag0  type2  word          单词
+tag1  type2  symbol        音标
+tag3  type2  symbol_url    音标发音 mp3
+tag2  type2  mean[0]       第一释义（"词性. 释义"）
+tag7  type1  meanCount     释义数量
+tag4/5/6  type2  sentence[0].en/.zh/.en_url
+tag8/9/10 type1  sentenceCount（en/zh/url 三数组各计数，恒相等）
+附加元素(i>=1)：
+  mean[i]         = tag 1000+(i-1)
+  sentence[i].en  = tag 2000+(i-1)
+  sentence[i].zh  = tag 3000+(i-1)
+  sentence[i].en_url = tag 4000+(i-1)
+```
+
+### 3.7 数据流打包
+- 顺序 = 元数据字段(按 tag0..7) → word0 字段 → word1 字段 → …
+- 字符串：UTF-8 + `\0`，补零到 4 字节对齐；length=len+1。
+- int：4 字节。描述符 `data_offset` = 该字段在文件中的绝对偏移。
+
+### 3.8 校验
+- **hash8** = `MD5(文件[40:])` 的后 8 字节。
+- **hash4**：自定义完整性校验和，常见 CRC-32 变体均不匹配，算法未识别。
+
+
+---
+
+# 二、设备端（词书读取）
+
+## 4. 协议
+
+### 设备注册（prod.study）
+```
+POST /wms/token?sn=<设备序列号>&code=<未知>&secret=<未知>
+→ {"code":200,"data":{"token":"...","expired":<秒>,"base":"http://p.s3.tuwa.starot.com"}}
+```
+
+### 资源推送（prod.study）
+```
+GET /wms/wait/download?cId=<1单词本|6电子书>&offset=&size=
+Header: Authorization: 'Bearer '<token>
+→ {"code":200,"data":{"total":N,"list":[{pushId,bookId,url,size,planId,study,review,updateTime,pressId,press,time,type,name,count,studyMode}]}}
+```
+- **type=2 电子书 `.hd` = 纯文本改扩展名**；**type=1 自定义词书 `.hd` = 二进制**（见 §3）。
+
+## 5. MQTT 主题
+APP↔设备实时通信/推书走 `tuwa.study.machine.*` 主题，如 `...custom.book.push.device`、`...custom.book.word.info`、`...book.plan.info`、`...wifi.password`、`...wifi.ssid`。
+
+
+---
+
+# 三、通用
+
+## 6. 鉴权格式
+- 厂商按 **`'Bearer '<token>`（带字面单引号）** 前缀解析。标准 `Bearer `（无引号）→ 401；`'Bearer '` → 200。
+- token 为 **JWT(HS512)**：
+  `{"alg":"HS512"}` + `{"created":<毫秒>,"id":<userId>,"sn":null,"rid":null,"type":"android|device","exp":<秒>}`
+- token 获取（APP 侧）：读设备 `tuwa.db` 的 `stusermodel` 表。
+
+## 7. 真机 .hd 获取路径
+
+前置：设备已 root 并安装登录目标 App；设备自带网络工具（curl）且可直连（不经中转代理）。
+
+### 7.1 取 token
+读设备数据库 `databases/tuwa.db` 的 `stusermodel` 表（HS512 JWT）：
+```
+adb shell sqlite3 /data/data/<包名>/databases/tuwa.db 'SELECT token FROM stusermodel'
+```
+
+### 7.2 词书列表（prod.app）
+```
+GET /wms/custom/book/list
+Header: Authorization: 'Bearer '<token>
+→ data:[{id, name, downloadUrl, fileSize, ...}]
+```
+
+### 7.3 资源列表（prod.study，电子书等）
+```
+GET /wms/wait/download?cId=<1单词本|6电子书>&offset=0&size=N
+Header: Authorization: 'Bearer '<token>
+→ data:{total, list:[{bookId, url, size, ...}]}
+```
+
+### 7.4 下载 .hd（S3/CDN 公有读，无需 token）
+```
+curl -o out.hd 'http://p.s3.tuwa.starot.com<downloadUrl | url>'
+```
+- 自定义词书（type=1）：`/book/custom_v1/<userId>/<bookId>_<ts>.hd`（二进制）
+- 电子书（type=2）：`/book/custom_v1/<userId>/ebook_<ts>.hd`（纯文本）
+
+### 7.5 本地生成（触发「保存」）
+在 App 内创建/保存自定义词书后，`.hd` 写入
+`getExternalFilesDir(null)/<bookId>.hd` = `/storage/emulated/0/Android/data/<包名>/files/<bookId>.hd`，经 `adb pull` 取回。
+
+## 8. 本地替代服务器
+- **DNS**：把 4 个 tuwa 域名（prod.app / prod.study / p.s3 / p.s3.public）A 记录指向本机局域网 IP，其余转发上游。
+- **HTTP**：S3 风格静态文件服务（按原 bucket 路径结构）+ 已按 `Api.java` 全量实现约 60 个 API 端点（/wms/*、/ums/*、/cms/*、/oms/*、/pms/*），返回 `{code,message,data}` 信封 + Bearer 校验（兼容 `'Bearer '` 与 `Bearer ` 前缀）。
+- 已实测：DNS 劫持、token 签发、Bearer 鉴权（200/401）、静态 .hd、404、按 Host 路由。
+- 限制：响应体仍为占位（未对拍真实结构）；MQTT 模拟未做。
+- 运行：`sudo python3 tuwa_server.py --dns-port 53 --http-port 80 --any`
+
+## 9. 未决项
+1. **hash4 @36**：常见 CRC-32 变体均不匹配，判定为库内置自定义校验和（区域/多项式未知）。不影响内容解码；若要生成设备完全接受的 `.hd`，需反汇编 `libSTBookGeneratorLib.so` 确认。
+2. **24 字节结构块**（offset 608）语义未完全确认。
+3. **设备端读取端**：`.hd` 读取端在设备主系统分区/设备应用（疑 Unity-il2cpp），固件 `xr_system_gen2.img`（2MB，全志 AWIH 引导镜像）不含读取端，未获取。
+4. **生成器真机读取验证**：需把生成的 `.hd` 上传到学习机验证可读（依赖设备端）。
 
