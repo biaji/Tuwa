@@ -284,13 +284,39 @@ APP↔设备实时通信/推书走 `tuwa.study.machine.*` 主题，如 `...custo
 
 ## 6. 真机 .hd 获取路径
 
-前置：设备已 root 并安装登录目标 App；设备自带网络工具（curl）且可直连（不经中转代理）。
+前置：设备已安装并登录目标 App；设备自带网络工具（curl）且可直连（不经中转代理）。
+
+> 6.1（读 sqlite）需 root；6.1.1（logcat）**无需 root**。
 
 ### 6.1 取 token
 读设备数据库 `databases/tuwa.db` 的 `stusermodel` 表（HS512 JWT）：
 ```
 adb shell sqlite3 /data/data/<包名>/databases/tuwa.db 'SELECT token FROM stusermodel'
 ```
+
+### 6.1.1 非 root：logcat 抓 token（无需 root）
+
+App 的 `LogUtil.init(..., true)`（`TuwaApplication`）默认开启日志，token 相关日志经 **LogUtil 双写**，logcat 出现两个 tag：
+
+| tag | 来源 | 说明 |
+|---|---|---|
+| `PRETTY_LOGGER` | orhanobut Logger 框架（`u9.g`→`u9.i`→`l9.a`） | 传 tag=null 落到默认值 `PRETTY_LOGGER`（**下划线**），消息包成 `┌──│└` 方框，级别 DEBUG |
+| `System.out` | `LogUtil.print()` 的 `System.out.println("Log>>>> [文件:行]...")` | 原始一行文本，级别 INFO |
+
+**含 token 文本的关键日志**：
+- `刷新token成功, token = <JWT>, expired = ...`（`viewmodel/g.java`，`LogUtil.d`）
+- `用户登录成功：<STUserModel>`（`viewmodel/d.java`，含完整用户模型与 token）
+- 失败路径 `刷新token失败：...`（`viewmodel/h.java`，`LogUtil.e`）
+
+**捕获命令**（任意一种即可）：
+```
+adb logcat -s PRETTY_LOGGER:System.out          # 按两个 tag 过滤
+adb logcat | grep -E "刷新token|用户登录成功"    # 按内容抓，覆盖两个 tag（最稳）
+```
+
+**磁盘兜底**：Logger 框架同时把带时间戳的行写文件
+`/sdcard/logger/logs_%d.csv`（默认路径 `Environment.getExternalStorageDirectory()/logger`，单文件上限 512000 字节），
+行格式 `毫秒 时间 DEBUG/INFO <tag> <消息>`，`adb pull /sdcard/logger` 可取回离线翻查。
 
 ### 6.2 词书列表（prod.app）
 ```
